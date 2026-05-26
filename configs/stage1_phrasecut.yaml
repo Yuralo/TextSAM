@@ -1,0 +1,46 @@
+# Stage 1: single-object text-prompted segmentation on PhraseCut.
+# Image + phrase -> one binary mask.
+
+model_config: configs/model.yaml
+
+data:
+  manifest: datasets/manifest_stage1.jsonl   # produced by `textsam-prepare --stage 1`
+  image_size: 1024
+  augmentations:
+    flip_horizontal: 0.5
+    color_jitter: 0.2
+    random_resized_crop: [0.7, 1.0]
+
+train:
+  epochs: 40
+  batch_size: 4                 # 1024^2, bf16, 3090 ~20GB peak
+  num_workers: 4
+  grad_accum_steps: 2           # effective batch 8
+  amp_dtype: bfloat16
+  grad_checkpointing: false
+  optimizer:
+    name: adamw
+    weight_decay: 0.05
+    lr_adapter: 1.0e-4
+    lr_decoder: 1.0e-5
+  scheduler:
+    name: cosine
+    warmup_iters: 1000
+    min_lr_ratio: 0.01
+
+loss:
+  dice_weight: 0.5
+  focal_weight: 0.5
+  focal_alpha: 0.25
+  focal_gamma: 2.0
+  iou_weight: 0.05
+
+eval:
+  every_n_epochs: 1
+  metric: miou
+
+logging:
+  log_dir: runs/stage1
+  ckpt_dir: checkpoints/stage1
+  save_every_n_epochs: 2
+  keep_last: 3

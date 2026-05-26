@@ -1,0 +1,53 @@
+# Stage 2: multi-object, multi-query finetuning on ADE20K + LVIS (on local COCO images).
+# Image + K class names -> K binary masks. Warm-started from stage 1 checkpoint.
+
+model_config: configs/model.yaml
+
+resume_from: checkpoints/stage1/best.pt
+
+data:
+  manifest: datasets/manifest_stage2.jsonl   # produced by `textsam-prepare --stage 2`
+  image_size: 512                            # smaller to fit K=8 queries per image
+  queries_per_image: 8
+  negative_query_ratio: 0.25                 # 25% of queries are class-names NOT in the image
+  augmentations:
+    flip_horizontal: 0.5
+    color_jitter: 0.2
+    random_resized_crop: [0.6, 1.0]
+  sampler:
+    use_lvis_rebalance: true                 # WeightedRandomSampler reweights LVIS by class frequency
+
+train:
+  epochs: 30
+  batch_size: 4                              # 4 imgs * 8 queries = 32 effective seg samples / step
+  num_workers: 4
+  grad_accum_steps: 2
+  amp_dtype: bfloat16
+  grad_checkpointing: true                   # decoder runs K times per image
+  optimizer:
+    name: adamw
+    weight_decay: 0.05
+    lr_adapter: 5.0e-5
+    lr_decoder: 5.0e-6
+  scheduler:
+    name: cosine
+    warmup_iters: 500
+    min_lr_ratio: 0.01
+
+loss:
+  dice_weight: 0.5
+  focal_weight: 0.5
+  focal_alpha: 0.25
+  focal_gamma: 2.0
+  iou_weight: 0.05
+  hungarian: false                           # set true for instance variant; semantic by default
+
+eval:
+  every_n_epochs: 1
+  metric: miou                               # plus class-AP if hungarian=true
+
+logging:
+  log_dir: runs/stage2
+  ckpt_dir: checkpoints/stage2
+  save_every_n_epochs: 1
+  keep_last: 3

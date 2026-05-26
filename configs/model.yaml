@@ -1,0 +1,25 @@
+# Model architecture configuration for TextSAM.
+# Loaded by textsam.models.textsam.TextSAM.from_config.
+
+image_encoder:
+  name: sam_vit_b               # one of: sam_vit_b, sam_vit_l (vit_l only fits 3090 with bs<=2)
+  checkpoint: checkpoints/sam_vit_b_01ec64.pth
+  freeze: true
+  image_size: 1024              # SAM's native resolution; stage 2 may override to 512
+
+text_encoder:
+  name: openai/clip-vit-base-patch16
+  freeze: true
+  max_length: 32                # short queries: "a red mug", "dog", etc.
+
+adapter:
+  text_dim: 512                 # CLIP ViT-B/16 hidden size
+  image_dim: 256                # SAM image embedding channels
+  hidden_dim: 256
+  num_layers: 2                 # cross-attention blocks
+  num_heads: 8
+  num_prompt_tokens: 4          # K sparse prompt tokens fed to SAM mask decoder
+
+decoder:
+  init_from_sam: true           # load mask decoder weights from the SAM checkpoint
+  multimask_output: false       # stage 1 returns 1 mask; stage 2 also 1-per-query

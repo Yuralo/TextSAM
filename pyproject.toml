@@ -1,0 +1,24 @@
+[project]
+name = "textsam"
+version = "0.1.0"
+description = "Open-vocabulary segmentation by prompting SAM with CLIP-encoded text."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Bahaa" }]
+license = { text = "MIT" }
+keywords = ["segmentation", "open-vocabulary", "SAM", "CLIP", "computer-vision"]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["textsam*"]
+exclude = ["datasets*", "checkpoints*", "runs*", "logs*", "outputs*"]
+
+[project.scripts]
+textsam-download = "textsam.data.download:main"
+textsam-prepare  = "textsam.data.prepare:main"
+textsam-train1   = "textsam.train.stage1:main"
+textsam-train2   = "textsam.train.stage2:main"
+textsam-predict  = "textsam.inference.predict:main"
