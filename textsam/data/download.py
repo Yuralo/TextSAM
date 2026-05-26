@@ -64,7 +64,12 @@ def download_sam_checkpoint():
 
 # -------------------- PhraseCut --------------------
 
-PHRASECUT_REFER_URL = "https://github.com/ChenyunWu/PhraseCutDataset/raw/master/dataset/PhraseCutDataset/data/VGPhraseCut_v0/refer_{split}.json"
+# PhraseCut annotations live on Google Drive (see upstream download_dataset.py).
+PHRASECUT_GDRIVE_IDS = {
+    "refer_train.json": "1qx-0q6r9r0YUGpoyT0B8HJKmUFWQDSu7",
+    "refer_val.json":   "1UyojArOFPlsSeNbA9fHWjCjOOU-OCohG",
+    "refer_test.json":  "1jrzXm1gcq6f5hNDeamZd0UmyyHUv61IZ",
+}
 # VG images by image_id: https://cs.stanford.edu/people/rak248/VG_100K_2/{id}.jpg
 VG_PRIMARY = "https://cs.stanford.edu/people/rak248/VG_100K/{}.jpg"
 VG_SECONDARY = "https://cs.stanford.edu/people/rak248/VG_100K_2/{}.jpg"
@@ -80,12 +85,18 @@ def _image_ids_from_phrasecut(splits: Iterable[str]) -> set[int]:
 
 
 def download_phrasecut(limit: int | None = None):
+    import gdown  # local import: only needed when actually downloading PhraseCut
+
     root = DATASETS_DIR / "phrasecut"
     root.mkdir(parents=True, exist_ok=True)
     splits = ["train", "val", "test"]
 
     for sp in splits:
-        _download(PHRASECUT_REFER_URL.format(split=sp), root / f"refer_{sp}.json", desc=f"PhraseCut refer_{sp}")
+        dest = root / f"refer_{sp}.json"
+        if dest.exists() and dest.stat().st_size > 0:
+            print(f"[skip] {dest} already exists ({dest.stat().st_size/1e6:.1f} MB)")
+            continue
+        gdown.download(id=PHRASECUT_GDRIVE_IDS[dest.name], output=str(dest), quiet=False)
 
     img_dir = root / "images"
     img_dir.mkdir(exist_ok=True)
