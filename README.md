@@ -18,7 +18,9 @@ learned adapter and then handing off to SAM's pretrained mask decoder.
 ## Quickstart
 
 ```bash
-# 1. Install (Python 3.10+)
+# 1. Create environment (Python 3.10+) and install
+conda create -n textsam python=3.12 -y
+conda activate textsam
 pip install -r requirements.txt
 
 # 2. Pull datasets + SAM checkpoint   (set COCO_ROOT to your local COCO 2017 root)
