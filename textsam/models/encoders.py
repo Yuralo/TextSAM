@@ -79,12 +79,7 @@ class CLIPTextEncoder(nn.Module):
 
     def __init__(self, name: str = "openai/clip-vit-base-patch16", max_length: int = 32):
         super().__init__()
-        try:
-            from transformers import CLIPTextModel, CLIPTokenizerFast
-        except ImportError as e:
-            raise ImportError(
-                "transformers not installed. Run: pip install transformers"
-            ) from e
+        from transformers import CLIPTextModel, CLIPTokenizerFast
 
         self.tokenizer = CLIPTokenizerFast.from_pretrained(name)
         self.model = CLIPTextModel.from_pretrained(name)
