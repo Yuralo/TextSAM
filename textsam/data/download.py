@@ -19,6 +19,7 @@ import subprocess
 import sys
 import urllib.request
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable
 
@@ -84,7 +85,7 @@ def _image_ids_from_phrasecut(splits: Iterable[str]) -> set[int]:
     return ids
 
 
-def download_phrasecut(limit: int | None = None):
+def download_phrasecut(limit: int | None = None, start_from: int = 0):
     import gdown  # local import: only needed when actually downloading PhraseCut
 
     root = DATASETS_DIR / "phrasecut"
@@ -101,20 +102,34 @@ def download_phrasecut(limit: int | None = None):
     img_dir = root / "images"
     img_dir.mkdir(exist_ok=True)
     image_ids = sorted(_image_ids_from_phrasecut(splits))
+    if start_from:
+        image_ids = image_ids[start_from:]
     if limit is not None:
         image_ids = image_ids[:limit]
-    print(f"PhraseCut: {len(image_ids)} unique images to fetch")
-    for img_id in tqdm(image_ids, desc="VG images"):
+
+    todo = [i for i in image_ids if not (img_dir / f"{i}.jpg").exists()]
+    print(f"PhraseCut: {len(image_ids)} unique images (after offset {start_from}), {len(todo)} to fetch")
+
+    def _fetch_one(img_id: int) -> bool:
         dest = img_dir / f"{img_id}.jpg"
-        if dest.exists():
-            continue
         for url_fmt in (VG_PRIMARY, VG_SECONDARY):
             try:
-                _download(url_fmt.format(img_id), dest, desc=str(img_id))
-                break
+                with urllib.request.urlopen(url_fmt.format(img_id), timeout=30) as r, open(dest, "wb") as f:
+                    shutil.copyfileobj(r, f, length=1 << 16)
+                return True
             except Exception:
                 dest.unlink(missing_ok=True)
                 continue
+        return False
+
+    failed = 0
+    with ThreadPoolExecutor(max_workers=32) as pool:
+        futures = [pool.submit(_fetch_one, i) for i in todo]
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="VG images", unit="img"):
+            if not fut.result():
+                failed += 1
+    if failed:
+        print(f"  warning: {failed} images failed to download (both VG mirrors 404'd)")
 
 
 # -------------------- ADE20K --------------------
@@ -175,13 +190,14 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--dataset", choices=["all", "sam", "phrasecut", "ade20k", "lvis"], required=True)
     p.add_argument("--limit", type=int, default=None, help="cap VG image downloads (for smoke test)")
+    p.add_argument("--start-from", type=int, default=0, help="skip the first N image IDs (sorted) — for resuming")
     p.add_argument("--coco-root", default=None, help="path to your local COCO 2017 root (with train2017/ and val2017/)")
     args = p.parse_args()
 
     if args.dataset in ("all", "sam"):
         download_sam_checkpoint()
     if args.dataset in ("all", "phrasecut"):
-        download_phrasecut(limit=args.limit)
+        download_phrasecut(limit=args.limit, start_from=args.start_from)
     if args.dataset in ("all", "ade20k"):
         download_ade20k()
     if args.dataset in ("all", "lvis"):

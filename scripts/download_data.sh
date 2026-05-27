@@ -6,8 +6,10 @@ set -euo pipefail
 
 COCO_ROOT="${COCO_ROOT:-/data/coco}"
 
+PHRASECUT_START_FROM="${PHRASECUT_START_FROM:-2300}"
+
 python -m textsam.data.download --dataset sam
-python -m textsam.data.download --dataset phrasecut
+python -m textsam.data.download --dataset phrasecut --start-from "$PHRASECUT_START_FROM"
 python -m textsam.data.download --dataset ade20k
 python -m textsam.data.download --dataset lvis --coco-root "$COCO_ROOT"
 
