@@ -34,15 +34,20 @@ def build_loaders(cfg: dict):
         augmentations=None,
     )
     tcfg = cfg["train"]
-    train_loader = DataLoader(
-        train_ds, batch_size=tcfg["batch_size"], shuffle=True,
-        num_workers=tcfg["num_workers"], pin_memory=True, drop_last=True,
+    num_workers = tcfg["num_workers"]
+    loader_extras = dict(
+        num_workers=num_workers,
+        pin_memory=True,
         collate_fn=collate_stage1,
+        persistent_workers=bool(tcfg.get("persistent_workers", False)) and num_workers > 0,
+        prefetch_factor=tcfg.get("prefetch_factor", 2) if num_workers > 0 else None,
+    )
+    loader_extras = {k: v for k, v in loader_extras.items() if v is not None}
+    train_loader = DataLoader(
+        train_ds, batch_size=tcfg["batch_size"], shuffle=True, drop_last=True, **loader_extras,
     )
     val_loader = DataLoader(
-        val_ds, batch_size=tcfg["batch_size"], shuffle=False,
-        num_workers=tcfg["num_workers"], pin_memory=True,
-        collate_fn=collate_stage1,
+        val_ds, batch_size=tcfg["batch_size"], shuffle=False, **loader_extras,
     )
     return train_loader, val_loader
 
@@ -78,12 +83,21 @@ def main():
     p.add_argument("--config", required=True)
     p.add_argument("--profile-vram-only", action="store_true")
     p.add_argument("--device", default="cuda")
+    p.add_argument("--resume", default=None,
+                   help="path to a checkpoint to resume from (defaults to <ckpt_dir>/last.pt if 'auto')")
     args = p.parse_args()
 
     cfg = yaml.safe_load(Path(args.config).read_text())
     model_cfg = yaml.safe_load(Path(cfg["model_config"]).read_text())
     model = TextSAM.from_config(model_cfg)
     print(f"Trainable params: {model.count_trainable_params()/1e6:.2f} M")
+
+    tcfg = cfg["train"]
+    if tcfg.get("compile", False):
+        model.adapter = torch.compile(model.adapter, mode="default")
+        if tcfg.get("compile_decoder", False):
+            model.decoder = torch.compile(model.decoder, mode="default")
+        print("[compile] adapter compiled" + (" + decoder" if tcfg.get("compile_decoder", False) else ""))
 
     train_loader, val_loader = build_loaders(cfg)
 
@@ -94,6 +108,16 @@ def main():
         return
 
     trainer = Trainer(model, train_loader, val_loader, cfg, device=device)
+
+    resume_path = args.resume
+    if resume_path == "auto":
+        resume_path = str(Path(cfg["logging"]["ckpt_dir"]) / "last.pt")
+    if resume_path:
+        if Path(resume_path).exists():
+            trainer.load(resume_path, resume=True)
+        else:
+            print(f"[ckpt] --resume given but {resume_path} not found; starting fresh")
+
     trainer.fit()
 
 

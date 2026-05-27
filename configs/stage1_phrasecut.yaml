@@ -12,12 +12,16 @@ data:
     random_resized_crop: [0.7, 1.0]
 
 train:
-  epochs: 40
-  batch_size: 4                 # 1024^2, bf16, 3090 ~20GB peak
-  num_workers: 4
-  grad_accum_steps: 2           # effective batch 8
+  epochs: 12                    # was 40; cosine schedule still saturates < 12 on PhraseCut
+  batch_size: 8                 # bumped from 4 (effective batch unchanged: was 4*2, now 8*1)
+  num_workers: 8                # was 4; PhraseCut decode + polygon raster is CPU-heavy
+  persistent_workers: true      # keep worker pool alive across epochs (avoids spinup cost)
+  prefetch_factor: 4            # keep 4 batches queued per worker
+  grad_accum_steps: 1
   amp_dtype: bfloat16
   grad_checkpointing: false
+  compile: true                 # torch.compile the adapter (and decoder if compile_decoder=true)
+  compile_decoder: false        # decoder includes SAM's MaskDecoder; enable at your own risk
   optimizer:
     name: adamw
     weight_decay: 0.05
@@ -36,11 +40,12 @@ loss:
   iou_weight: 0.05
 
 eval:
-  every_n_epochs: 1
+  every_n_epochs: 3            # was 1 — full PhraseCut val is expensive; sample less often
   metric: miou
 
 logging:
   log_dir: runs/stage1
   ckpt_dir: checkpoints/stage1
-  save_every_n_epochs: 2
+  save_every_n_epochs: 2       # named epoch_NNN.pt, kept up to `keep_last`
+  save_every_n_steps: 2000     # also overwrite `last.pt` mid-epoch; 0 disables
   keep_last: 3

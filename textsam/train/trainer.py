@@ -45,6 +45,12 @@ class Trainer:
         device: torch.device | str = "cuda",
         step_fn: Callable | None = None,   # custom step (used by stage 2 multi-query)
     ):
+        # Free wins: TF32 for fp32 matmuls + cuDNN autotuner for fixed shapes.
+        # Both are safe for SAM/CLIP at fixed input resolution.
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -76,12 +82,14 @@ class Trainer:
         self.log_dir = Path(lcfg["log_dir"])
         self.ckpt_dir = Path(lcfg["ckpt_dir"])
         self.save_every = lcfg.get("save_every_n_epochs", 1)
+        self.save_every_steps = lcfg.get("save_every_n_steps", 0)  # 0 disables intra-epoch saves
         self.keep_last = lcfg.get("keep_last", 3)
         self.recent_ckpts: deque[Path] = deque()
         self.logger = TBLogger(self.log_dir)
         self.loss_cfg = cfg["loss"]
         self.best_val = -float("inf")
         self.global_step = 0
+        self.start_epoch = 1
 
     # ---------- per-step ----------
 
@@ -109,12 +117,15 @@ class Trainer:
     # ---------- loops ----------
 
     def fit(self):
-        for epoch in range(1, self.epochs + 1):
+        for epoch in range(self.start_epoch, self.epochs + 1):
             self._train_one_epoch(epoch)
             if self.val_loader is not None and epoch % self.cfg["eval"].get("every_n_epochs", 1) == 0:
                 self._validate(epoch)
             if epoch % self.save_every == 0:
                 self._save(epoch, is_best=False)
+            # Always refresh `last.pt` at epoch boundary so a crashed run
+            # never loses more than one epoch + save_every_n_steps.
+            self._save_latest(epoch)
         self.logger.close()
 
     def _train_one_epoch(self, epoch: int):
@@ -153,6 +164,10 @@ class Trainer:
             pbar.set_postfix(loss=f"{running['total']:.4f}", dice=f"{running['dice']:.3f}", lr=f"{self.optim.param_groups[0]['lr']:.2e}")
             self.logger.log_scalars("train", parts, self.global_step)
 
+            if self.save_every_steps and self.global_step % self.save_every_steps == 0:
+                self._save_latest(epoch)
+                print(f"[ckpt] last.pt updated at step {self.global_step} (epoch {epoch})")
+
     @torch.no_grad()
     def _validate(self, epoch: int):
         self.model.eval()
@@ -169,10 +184,17 @@ class Trainer:
 
     # ---------- ckpt ----------
 
+    def _extras(self, epoch: int) -> dict:
+        return {
+            "epoch": epoch,
+            "global_step": self.global_step,
+            "best_val": self.best_val,
+        }
+
     def _save(self, epoch: int, is_best: bool):
         name = "best.pt" if is_best else f"epoch_{epoch:03d}.pt"
         path = self.ckpt_dir / name
-        save_checkpoint(path, self.model, self.optim, scaler=self.scaler, extras={"epoch": epoch, "best_val": self.best_val})
+        save_checkpoint(path, self.model, self.optim, scaler=self.scaler, extras=self._extras(epoch))
         if not is_best:
             self.recent_ckpts.append(path)
             while len(self.recent_ckpts) > self.keep_last:
@@ -181,6 +203,30 @@ class Trainer:
                     old.unlink()
         print(f"[ckpt] saved {path}")
 
-    def load(self, path: str | Path):
-        info = load_checkpoint(path, self.model, optimizer=None, scaler=self.scaler, strict=False)
-        print(f"[ckpt] loaded {path}: {info['load_msg']}")
+    def _save_latest(self, epoch: int):
+        """Atomic-ish update of `last.pt` for resume — overwrites every save."""
+        path = self.ckpt_dir / "last.pt"
+        tmp = path.with_suffix(".pt.tmp")
+        save_checkpoint(tmp, self.model, self.optim, scaler=self.scaler, extras=self._extras(epoch))
+        tmp.replace(path)
+
+    def load(self, path: str | Path, resume: bool = False):
+        """Load weights. If `resume`, also restore optimizer + step + epoch."""
+        info = load_checkpoint(
+            path,
+            self.model,
+            optimizer=self.optim if resume else None,
+            scaler=self.scaler if resume else None,
+            strict=False,
+        )
+        if resume:
+            ex = info.get("extras", {})
+            self.global_step = int(ex.get("global_step", 0))
+            self.best_val = float(ex.get("best_val", -float("inf")))
+            self.start_epoch = int(ex.get("epoch", 0)) + 1
+            print(
+                f"[ckpt] resumed {path}: epoch {self.start_epoch-1} done, "
+                f"step {self.global_step}, best_val {self.best_val:.4f}"
+            )
+        else:
+            print(f"[ckpt] loaded {path}: {info['load_msg']}")

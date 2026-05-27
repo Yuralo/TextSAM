@@ -13,8 +13,23 @@ from typing import Any
 import torch
 
 
+_COMPILE_PREFIX = "_orig_mod."
+
+
+def _strip_compile_prefix(name: str) -> str:
+    # torch.compile wraps modules and prefixes parameter names with "_orig_mod.".
+    # Strip so checkpoints stay portable between compiled and uncompiled runs.
+    while _COMPILE_PREFIX in name:
+        name = name.replace(_COMPILE_PREFIX, "")
+    return name
+
+
 def trainable_state_dict(model) -> dict[str, torch.Tensor]:
-    return {n: p.detach().cpu() for n, p in model.named_parameters() if p.requires_grad}
+    return {
+        _strip_compile_prefix(n): p.detach().cpu()
+        for n, p in model.named_parameters()
+        if p.requires_grad
+    }
 
 
 def save_checkpoint(
@@ -45,8 +60,16 @@ def load_checkpoint(
     scaler=None,
     strict: bool = False,
 ) -> dict[str, Any]:
-    payload = torch.load(path, map_location="cpu")
-    msg = model.load_state_dict(payload["model"], strict=strict)
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    # Re-key to match whatever wrapping the live model has (compiled vs not).
+    live_keys = {k for k, _ in model.named_parameters()}
+    saved = payload["model"]
+    needs_prefix = any(k.startswith(_COMPILE_PREFIX) for k in live_keys)
+    if needs_prefix:
+        saved = {f"{_COMPILE_PREFIX}{k}" if not k.startswith(_COMPILE_PREFIX) else k: v for k, v in saved.items()}
+    else:
+        saved = {_strip_compile_prefix(k): v for k, v in saved.items()}
+    msg = model.load_state_dict(saved, strict=strict)
     if optimizer is not None and payload.get("optimizer") is not None:
         optimizer.load_state_dict(payload["optimizer"])
     if scheduler is not None and payload.get("scheduler") is not None:
