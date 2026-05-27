@@ -18,6 +18,7 @@ from typing import Callable
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -100,19 +101,32 @@ class Trainer:
 
     def _stage1_step(self, batch: dict) -> tuple[torch.Tensor, dict, torch.Tensor, torch.Tensor]:
         images = batch["image"].to(self.device, non_blocking=True)
+        if self.cfg["train"].get("channels_last", False):
+            images = images.contiguous(memory_format=torch.channels_last)
         masks = batch["mask"].to(self.device, non_blocking=True)
         texts = batch["text"]
+        # Compute loss at the decoder's native resolution (defaults to 256²)
+        # rather than the 1024² input size: skips the bilinear upsample on every
+        # iter and shrinks dice/focal compute by 16×.
+        loss_size = int(self.cfg["train"].get("loss_size", 256))
         with torch.amp.autocast(device_type="cuda", dtype=self.amp_dtype, enabled=self.device.type == "cuda"):
-            mask_logits, iou_pred = self.model(images, texts)
+            mask_logits, iou_pred = self.model(images, texts, output_size=loss_size)
+            if masks.shape[-1] != loss_size:
+                # GT mask is (B, H, W); add channel dim for interp, then squeeze.
+                masks_lr = F.interpolate(
+                    masks.unsqueeze(1), size=(loss_size, loss_size), mode="nearest"
+                ).squeeze(1)
+            else:
+                masks_lr = masks
             loss, parts = combined_seg_loss(
-                mask_logits, masks, iou_pred,
+                mask_logits, masks_lr, iou_pred,
                 dice_weight=self.loss_cfg["dice_weight"],
                 focal_weight=self.loss_cfg["focal_weight"],
                 focal_alpha=self.loss_cfg["focal_alpha"],
                 focal_gamma=self.loss_cfg["focal_gamma"],
                 iou_weight=self.loss_cfg["iou_weight"],
             )
-        return loss, parts, mask_logits, masks
+        return loss, parts, mask_logits, masks_lr
 
     # ---------- loops ----------
 

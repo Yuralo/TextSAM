@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 from pathlib import Path
 from typing import Iterator
@@ -28,6 +29,18 @@ from tqdm import tqdm
 DATASETS_DIR = Path("datasets")
 
 
+def _polygons_to_rle(flat_polygons: list[list[float]], height: int, width: int) -> dict:
+    """Rasterize polygons once and encode as compact RLE with base64 `counts`."""
+    from pycocotools import mask as coco_mask
+    rles = coco_mask.frPyObjects(flat_polygons, height, width)
+    rle = coco_mask.merge(rles)
+    # `counts` from pycocotools comes back as bytes; encode to ascii base64 for JSON.
+    counts = rle["counts"]
+    if isinstance(counts, bytes):
+        counts = base64.b64encode(counts).decode("ascii")
+    return {"size": list(rle["size"]), "counts": counts}
+
+
 # -------------------- PhraseCut -> stage 1 manifest --------------------
 
 def iter_phrasecut(split: str) -> Iterator[dict]:
@@ -36,21 +49,19 @@ def iter_phrasecut(split: str) -> Iterator[dict]:
     if not refer_path.exists():
         print(f"[warn] {refer_path} missing — run `textsam-download --dataset phrasecut` first")
         return
+    from PIL import Image  # for image dimensions to bake RLE at native resolution
     data = json.loads(refer_path.read_text())
-    # Map "train"/"val"/"test" to our split names; PhraseCut's test we treat as val.
     out_split = {"train": "train", "val": "val", "test": "val"}[split]
+    # Cache (img_id) -> (H, W) so we don't reopen the JPG for every phrase.
+    dims_cache: dict[int, tuple[int, int]] = {}
     for r in data:
         img_id = r["image_id"]
         image_path = img_dir / f"{img_id}.jpg"
         if not image_path.exists():
             continue
-        # PhraseCut stores polygons as list[list[float]] per instance; one phrase per instance.
         polygons = r.get("Polygons") or r.get("polygons")
         if not polygons:
             continue
-        # PhraseCut stores polygons per instance as a list of polygon parts, each a
-        # list of [x,y] vertex pairs. pycocotools wants the flat [x1,y1,x2,y2,...]
-        # form, so collapse to that here.
         flat_polygons = []
         for poly in polygons:
             for part in (poly if isinstance(poly[0], list) else [poly]):
@@ -60,9 +71,25 @@ def iter_phrasecut(split: str) -> Iterator[dict]:
                     flat_polygons.append(part)
         if not flat_polygons:
             continue
+        if img_id not in dims_cache:
+            with Image.open(image_path) as im:
+                dims_cache[img_id] = (im.height, im.width)
+        H, W = dims_cache[img_id]
+        try:
+            rle = _polygons_to_rle(flat_polygons, H, W)
+        except Exception as exc:
+            # If raster fails (degenerate polygon), keep polygons as fallback.
+            yield {
+                "image": str(image_path),
+                "polygons": flat_polygons,
+                "text": r.get("phrase") or r.get("Phrase"),
+                "dataset": "phrasecut",
+                "split": out_split,
+            }
+            continue
         yield {
             "image": str(image_path),
-            "polygons": flat_polygons,
+            "rle": rle,                                    # pre-rasterized binary mask
             "text": r.get("phrase") or r.get("Phrase"),
             "dataset": "phrasecut",
             "split": out_split,

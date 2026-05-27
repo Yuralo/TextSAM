@@ -26,6 +26,7 @@ def build_loaders(cfg: dict):
         image_size=dcfg["image_size"],
         split="train",
         augmentations=dcfg.get("augmentations"),
+        subsample_per_image=int(dcfg.get("subsample_per_image", 0)),
     )
     val_ds = PhraseCutDataset(
         manifest_path=dcfg["manifest"],
@@ -93,11 +94,26 @@ def main():
     print(f"Trainable params: {model.count_trainable_params()/1e6:.2f} M")
 
     tcfg = cfg["train"]
+    if tcfg.get("channels_last", False):
+        # NCHW conv layers (patch_embed, neck, mask decoder upscaler) get a fused
+        # memory-layout path on Ampere. ViT attention itself is layout-agnostic.
+        model = model.to(memory_format=torch.channels_last)
+        print("[channels_last] enabled")
     if tcfg.get("compile", False):
         model.adapter = torch.compile(model.adapter, mode="default")
         if tcfg.get("compile_decoder", False):
             model.decoder = torch.compile(model.decoder, mode="default")
-        print("[compile] adapter compiled" + (" + decoder" if tcfg.get("compile_decoder", False) else ""))
+        if tcfg.get("compile_encoder", False):
+            # Encoder is frozen + fixed-shape -> safe to use reduce-overhead (CUDA graphs).
+            model.image_encoder.encoder = torch.compile(
+                model.image_encoder.encoder, mode="reduce-overhead"
+            )
+        compiled = [name for name, on in
+                    [("adapter", True),
+                     ("decoder", tcfg.get("compile_decoder", False)),
+                     ("encoder", tcfg.get("compile_encoder", False))]
+                    if on]
+        print(f"[compile] compiled: {', '.join(compiled)}")
 
     train_loader, val_loader = build_loaders(cfg)
 

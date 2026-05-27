@@ -77,10 +77,15 @@ class TextSAMDecoder(nn.Module):
         iou_pred = torch.cat(iou_list, dim=0)
 
         # low_res_masks: (B, num_masks, 256, 256). With multimask_output=False, num_masks=1.
-        masks = F.interpolate(
-            low_res_masks,
-            size=(output_size, output_size),
-            mode="bilinear",
-            align_corners=False,
-        )
+        # Skip the upsample when caller wants the native 256² (training-time loss
+        # is computed at native res — see configs/stage1_phrasecut.yaml:loss_size).
+        if output_size != low_res_masks.shape[-1]:
+            masks = F.interpolate(
+                low_res_masks,
+                size=(output_size, output_size),
+                mode="bilinear",
+                align_corners=False,
+            )
+        else:
+            masks = low_res_masks
         return masks, iou_pred

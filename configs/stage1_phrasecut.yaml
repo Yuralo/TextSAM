@@ -6,22 +6,26 @@ model_config: configs/model.yaml
 data:
   manifest: datasets/manifest_stage1.jsonl   # produced by `textsam-prepare --stage 1`
   image_size: 1024
+  subsample_per_image: 1        # one random phrase per image per epoch (was: all ~310k)
   augmentations:
     flip_horizontal: 0.5
     color_jitter: 0.2
     random_resized_crop: [0.7, 1.0]
 
 train:
-  epochs: 12                    # was 40; cosine schedule still saturates < 12 on PhraseCut
-  batch_size: 8                 # bumped from 4 (effective batch unchanged: was 4*2, now 8*1)
-  num_workers: 8                # was 4; PhraseCut decode + polygon raster is CPU-heavy
-  persistent_workers: true      # keep worker pool alive across epochs (avoids spinup cost)
-  prefetch_factor: 4            # keep 4 batches queued per worker
+  epochs: 12
+  batch_size: 8
+  num_workers: 8
+  persistent_workers: true
+  prefetch_factor: 4
   grad_accum_steps: 1
   amp_dtype: bfloat16
   grad_checkpointing: false
-  compile: true                 # torch.compile the adapter (and decoder if compile_decoder=true)
-  compile_decoder: false        # decoder includes SAM's MaskDecoder; enable at your own risk
+  loss_size: 256                # compute loss at decoder's native res; skips 256->1024 upsample
+  channels_last: true           # fuses conv kernels (patch_embed, neck, mask decoder convs)
+  compile: true                 # torch.compile the adapter
+  compile_decoder: true         # also the mask decoder (shape-stable, safe)
+  compile_encoder: true         # SAM encoder is frozen + fixed shape -> CUDA-graph friendly
   optimizer:
     name: adamw
     weight_decay: 0.05

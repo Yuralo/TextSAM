@@ -17,7 +17,10 @@ Mask is rasterized on-the-fly from the polygons (saves disk).
 
 from __future__ import annotations
 
+import base64
 import json
+import random
+from collections import defaultdict
 from pathlib import Path
 from typing import List
 
@@ -52,6 +55,16 @@ def _rasterize_polygons(polygons: List[List[float]], height: int, width: int) ->
     return m.astype(np.uint8)
 
 
+def _decode_rle(rle_entry: dict) -> np.ndarray:
+    """Decode the compact RLE we write in `prepare.py` (size + base64 counts)."""
+    from pycocotools import mask as coco_mask
+    counts = rle_entry["counts"]
+    if isinstance(counts, str):
+        counts = base64.b64decode(counts)
+    rle = {"size": rle_entry["size"], "counts": counts}
+    return coco_mask.decode(rle).astype(np.uint8)
+
+
 class PhraseCutDataset(Dataset):
     def __init__(
         self,
@@ -59,6 +72,7 @@ class PhraseCutDataset(Dataset):
         image_size: int = 1024,
         split: str = "train",
         augmentations: dict | None = None,
+        subsample_per_image: int = 0,  # 0 = use all entries; 1 = one random phrase per image
     ):
         self.manifest_path = Path(manifest_path)
         self.image_size = image_size
@@ -70,17 +84,37 @@ class PhraseCutDataset(Dataset):
                 if e.get("dataset") == "phrasecut" and e.get("split") == split:
                     rows.append(e)
         self.entries = rows
+        self.subsample_per_image = subsample_per_image if split == "train" else 0
+        if self.subsample_per_image:
+            # Group entry indices by image. One "epoch" then iterates over images,
+            # sampling a fresh phrase per image each step.
+            groups: dict[str, list[int]] = defaultdict(list)
+            for i, e in enumerate(rows):
+                groups[e["image"]].append(i)
+            self.image_groups: list[list[int]] | None = list(groups.values())
+        else:
+            self.image_groups = None
         self.augment = build_joint_transform(image_size, augmentations) if (split == "train" and augmentations) else None
         self.sam_pre = SAMPreprocess(target_size=image_size)
 
     def __len__(self):
-        return len(self.entries)
+        return len(self.image_groups) if self.image_groups is not None else len(self.entries)
+
+    def _pick_entry(self, idx: int) -> dict:
+        if self.image_groups is None:
+            return self.entries[idx]
+        group = self.image_groups[idx]
+        # Train: random sample. Val/test path bypasses this branch entirely.
+        return self.entries[random.choice(group)]
 
     def __getitem__(self, idx: int):
-        e = self.entries[idx]
+        e = self._pick_entry(idx)
         img = np.array(Image.open(e["image"]).convert("RGB"))
         H, W = img.shape[:2]
-        mask = _rasterize_polygons(e["polygons"], H, W)
+        if "rle" in e:
+            mask = _decode_rle(e["rle"])
+        else:
+            mask = _rasterize_polygons(e["polygons"], H, W)
         if self.augment is not None:
             img, mask = self.augment(img, mask)
         image_t = to_tensor_chw(img)

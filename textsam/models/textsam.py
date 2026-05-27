@@ -97,7 +97,7 @@ class TextSAM(nn.Module):
                 pooled, tokens, mask = self.text_encoder(texts)
         return pooled, tokens, mask
 
-    def forward(self, images: Tensor, texts: List[str]) -> tuple[Tensor, Tensor]:
+    def forward(self, images: Tensor, texts: List[str], output_size: int | None = None) -> tuple[Tensor, Tensor]:
         """Returns (mask_logits[B,1,H,W], iou_pred[B,1])."""
         image_feat = self.encode_image(images)
         _, text_tokens, text_mask = self.encode_text(texts)
@@ -107,7 +107,7 @@ class TextSAM(nn.Module):
             image_embeddings=image_feat,
             image_pe=image_pe,
             sparse_prompts=sparse_prompts,
-            output_size=self.image_size,
+            output_size=output_size if output_size is not None else self.image_size,
         )
         return masks, iou
 
