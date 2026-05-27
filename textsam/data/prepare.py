@@ -48,15 +48,16 @@ def iter_phrasecut(split: str) -> Iterator[dict]:
         polygons = r.get("Polygons") or r.get("polygons")
         if not polygons:
             continue
-        # PhraseCut polygon format is sometimes nested per-instance; flatten conservatively.
+        # PhraseCut stores polygons per instance as a list of polygon parts, each a
+        # list of [x,y] vertex pairs. pycocotools wants the flat [x1,y1,x2,y2,...]
+        # form, so collapse to that here.
         flat_polygons = []
         for poly in polygons:
-            if isinstance(poly[0], list):
-                # list of [x,y,...] coords
-                flat_polygons.extend([p for p in poly if len(p) >= 6])
-            else:
-                if len(poly) >= 6:
-                    flat_polygons.append(poly)
+            for part in (poly if isinstance(poly[0], list) else [poly]):
+                if part and isinstance(part[0], (list, tuple)):
+                    part = [c for xy in part for c in xy]
+                if len(part) >= 6:
+                    flat_polygons.append(part)
         if not flat_polygons:
             continue
         yield {

@@ -30,14 +30,23 @@ from .transforms import SAMPreprocess, build_joint_transform, to_tensor_chw
 
 
 def _rasterize_polygons(polygons: List[List[float]], height: int, width: int) -> np.ndarray:
-    """Polygons in flat [x1,y1,x2,y2,...] format -> binary mask (H, W) uint8."""
-    try:
-        from pycocotools import mask as coco_mask
-    except ImportError as e:
-        raise ImportError("pip install pycocotools") from e
+    """Polygons -> binary mask (H, W) uint8.
+
+    Accepts either flat `[x1,y1,x2,y2,...]` or nested `[[x,y],[x,y],...]` per
+    polygon; pycocotools requires the flat form.
+    """
+    from pycocotools import mask as coco_mask
     if not polygons:
         return np.zeros((height, width), dtype=np.uint8)
-    rles = coco_mask.frPyObjects(polygons, height, width)
+    flat = []
+    for poly in polygons:
+        if poly and isinstance(poly[0], (list, tuple)):
+            poly = [c for xy in poly for c in xy]
+        if len(poly) >= 6:
+            flat.append(poly)
+    if not flat:
+        return np.zeros((height, width), dtype=np.uint8)
+    rles = coco_mask.frPyObjects(flat, height, width)
     rle = coco_mask.merge(rles)
     m = coco_mask.decode(rle)
     return m.astype(np.uint8)
