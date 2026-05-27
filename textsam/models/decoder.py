@@ -52,19 +52,30 @@ class TextSAMDecoder(nn.Module):
     ) -> tuple[Tensor, Tensor]:
         B = image_embeddings.shape[0]
         H, W = image_embeddings.shape[-2:]
-        dense_prompts = (
+        dense_per_image = (
             self.no_mask_embed.weight.reshape(1, -1, 1, 1)
-            .expand(B, -1, H, W)
+            .expand(1, -1, H, W)
             .to(image_embeddings.dtype)
         )
 
-        low_res_masks, iou_pred = self.decoder(
-            image_embeddings=image_embeddings,
-            image_pe=image_pe,
-            sparse_prompt_embeddings=sparse_prompts,
-            dense_prompt_embeddings=dense_prompts,
-            multimask_output=self.multimask_output,
-        )
+        # SAM's MaskDecoder is implemented for single-image / multi-prompt: it
+        # does `repeat_interleave(image_embeddings, tokens.shape[0])` internally,
+        # which produces B*B instead of B when image_embeddings is batched.
+        # Call it per-batch-item and stack to keep gradients clean.
+        masks_low_list, iou_list = [], []
+        for i in range(B):
+            m_i, iou_i = self.decoder(
+                image_embeddings=image_embeddings[i : i + 1],
+                image_pe=image_pe,
+                sparse_prompt_embeddings=sparse_prompts[i : i + 1],
+                dense_prompt_embeddings=dense_per_image,
+                multimask_output=self.multimask_output,
+            )
+            masks_low_list.append(m_i)
+            iou_list.append(iou_i)
+        low_res_masks = torch.cat(masks_low_list, dim=0)
+        iou_pred = torch.cat(iou_list, dim=0)
+
         # low_res_masks: (B, num_masks, 256, 256). With multimask_output=False, num_masks=1.
         masks = F.interpolate(
             low_res_masks,
