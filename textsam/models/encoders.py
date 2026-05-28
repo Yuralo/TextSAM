@@ -168,7 +168,7 @@ class CLIPTextEncoder(nn.Module):
     states so the cross-modal adapter can attend over tokens.
     """
 
-    def __init__(self, name: str = "openai/clip-vit-base-patch16", max_length: int = 32):
+    def __init__(self, name: str = "openai/clip-vit-base-patch16", max_length: int = 32, cache: bool = False):
         super().__init__()
         from transformers import CLIPTextModel, CLIPTokenizerFast
 
@@ -176,6 +176,16 @@ class CLIPTextEncoder(nn.Module):
         self.model = CLIPTextModel.from_pretrained(name)
         self.max_length = max_length
         self.hidden_dim = self.model.config.hidden_size  # 512 for ViT-B/16
+        # Per-string embedding cache. Only valid when the encoder is frozen and the
+        # vocabulary is closed (stage 2: a fixed set of class names that repeats
+        # every step). Stores (tokens[L,D], mask[L], pooled[D]) on the model device.
+        self._cache_enabled = cache
+        self._cache: dict[str, tuple[Tensor, Tensor, Tensor]] = {}
+
+    def enable_cache(self, enabled: bool = True):
+        self._cache_enabled = enabled
+        if not enabled:
+            self._cache.clear()
 
     @torch.no_grad()
     def tokenize(self, texts: List[str], device: torch.device | str = "cpu"):
@@ -188,18 +198,35 @@ class CLIPTextEncoder(nn.Module):
         )
         return {k: v.to(device) for k, v in enc.items()}
 
+    @torch.no_grad()
+    def _encode_uncached(self, texts: List[str], device):
+        inputs = self.tokenize(texts, device=device)
+        out = self.model(**inputs)
+        return out.pooler_output, out.last_hidden_state, inputs["attention_mask"]
+
+    def _forward_cached(self, texts: List[str]) -> tuple[Tensor, Tensor, Tensor]:
+        device = next(self.model.parameters()).device
+        missing = [t for t in dict.fromkeys(texts) if t not in self._cache]
+        if missing:
+            pooled, tokens, mask = self._encode_uncached(missing, device)
+            for i, t in enumerate(missing):
+                self._cache[t] = (tokens[i], mask[i], pooled[i])
+        tokens = torch.stack([self._cache[t][0] for t in texts])
+        mask = torch.stack([self._cache[t][1] for t in texts])
+        pooled = torch.stack([self._cache[t][2] for t in texts])
+        return pooled, tokens, mask
+
     def forward(self, texts: List[str] | dict) -> tuple[Tensor, Tensor, Tensor]:
         """Returns (pooled[B,D], tokens[B,L,D], mask[B,L])."""
+        if self._cache_enabled and isinstance(texts, list):
+            return self._forward_cached(texts)
         if isinstance(texts, list):
             device = next(self.model.parameters()).device
             inputs = self.tokenize(texts, device=device)
         else:
             inputs = texts
         out = self.model(**inputs)
-        pooled = out.pooler_output            # (B, D)
-        tokens = out.last_hidden_state        # (B, L, D)
-        mask = inputs["attention_mask"]       # (B, L)
-        return pooled, tokens, mask
+        return out.pooler_output, out.last_hidden_state, inputs["attention_mask"]
 
     def freeze(self):
         for p in self.model.parameters():

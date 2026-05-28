@@ -66,6 +66,7 @@ class Trainer:
         self.optim = torch.optim.AdamW(
             model.parameter_groups(lr_adapter=ocfg["lr_adapter"], lr_decoder=ocfg["lr_decoder"]),
             weight_decay=ocfg["weight_decay"],
+            fused=(self.device.type == "cuda"),  # fused CUDA kernel for the optim step
         )
         self.epochs = tcfg["epochs"]
         self.grad_accum = tcfg.get("grad_accum_steps", 1)

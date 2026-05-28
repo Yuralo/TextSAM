@@ -115,41 +115,43 @@ class TextSAM(nn.Module):
         )
         return masks, iou
 
-    def forward_multi_query(self, images: Tensor, texts_per_image: List[List[str]]) -> tuple[Tensor, Tensor]:
+    def forward_multi_query(
+        self, images: Tensor, texts_per_image: List[List[str]], output_size: int | None = None
+    ) -> tuple[Tensor, Tensor]:
         """Stage-2 forward: each image has a list of K text queries.
 
-        We tile the image embedding K times (cheap — already computed once per image)
-        and run the adapter+decoder K times per image, batched as B*K samples.
+        The image is encoded once. The adapter runs per query (it cross-attends
+        each query to the image), but the SAM decoder is called once per image
+        with all K prompts (its native multi-prompt mode) — B calls, not B*K.
 
         Args:
             images: (B, 3, H, W)
             texts_per_image: list of B lists, each of length K.
 
         Returns:
-            masks: (B, K, 1, H, W)
+            masks: (B, K, 1, S, S)
             iou:   (B, K)
         """
         B = images.shape[0]
         K = len(texts_per_image[0])
         assert all(len(t) == K for t in texts_per_image), "all images must share K"
 
-        image_feat = self.encode_image(images)                          # (B, 256, 64, 64)
-        image_feat_rep = image_feat.repeat_interleave(K, dim=0)         # (B*K, 256, 64, 64)
+        image_feat = self.encode_image(images)                          # (B, 256, H, W)
+        image_feat_rep = image_feat.repeat_interleave(K, dim=0)         # (B*K, 256, H, W) for adapter
 
         flat_texts: List[str] = [t for ts in texts_per_image for t in ts]
         _, text_tokens, text_mask = self.encode_text(flat_texts)
 
-        sparse_prompts = self.adapter(image_feat_rep, text_tokens, text_mask)
+        sparse_prompts = self.adapter(image_feat_rep, text_tokens, text_mask)  # (B*K, T, 256)
+        sparse_prompts = sparse_prompts.view(B, K, *sparse_prompts.shape[1:])  # (B, K, T, 256)
+
         image_pe = self.image_encoder.image_pe()
-        masks, iou = self.decoder(
-            image_embeddings=image_feat_rep,
+        masks, iou = self.decoder.forward_grouped(
+            image_embeddings=image_feat,
             image_pe=image_pe,
             sparse_prompts=sparse_prompts,
-            output_size=self.image_size,
+            output_size=output_size if output_size is not None else self.image_size,
         )
-        # reshape (B*K, 1, H, W) -> (B, K, 1, H, W)
-        masks = masks.view(B, K, *masks.shape[1:])
-        iou = iou.view(B, K)
         return masks, iou
 
     # ---------- training helpers ----------

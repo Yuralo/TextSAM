@@ -20,10 +20,18 @@ data:
 train:
   epochs: 30
   batch_size: 4                              # 4 imgs * 8 queries = 32 effective seg samples / step
-  num_workers: 4
+  num_workers: 8
+  persistent_workers: true
+  prefetch_factor: 4
   grad_accum_steps: 2
   amp_dtype: bfloat16
   grad_checkpointing: true                   # decoder runs K times per image
+  loss_size: 256                             # compute loss at decoder-native res
+  channels_last: true
+  text_cache: true                           # fixed class-name vocab -> cache CLIP text embeddings
+  compile: true                              # compile adapter
+  compile_decoder: true
+  compile_encoder: true                      # frozen + fixed-shape SAM encoder
   optimizer:
     name: adamw
     weight_decay: 0.05
