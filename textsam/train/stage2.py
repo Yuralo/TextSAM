@@ -97,6 +97,9 @@ def main():
 
     cfg = yaml.safe_load(Path(args.config).read_text())
     model_cfg = yaml.safe_load(Path(cfg["model_config"]).read_text())
+    # Stage 2 trains at a smaller resolution (512²) to fit K queries per image.
+    # Tell the SAM encoder so it interpolates its 1024²-pretrained pos embeddings.
+    model_cfg["image_encoder"]["image_size"] = cfg["data"]["image_size"]
     model = TextSAM.from_config(model_cfg)
     print(f"Trainable params: {model.count_trainable_params()/1e6:.2f} M")
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch import Tensor
 
 
@@ -76,8 +77,10 @@ class CrossModalAdapter(nn.Module):
         self.text_proj = nn.Linear(text_dim, hidden_dim)
         self.image_proj = nn.Conv2d(image_dim, hidden_dim, kernel_size=1)
 
-        # learned positional embedding over the (64,64) image grid in hidden_dim
-        self.image_pos = nn.Parameter(torch.zeros(1, 64 * 64, hidden_dim))
+        # learned positional embedding over the (64,64) image grid (1024² input).
+        # Interpolated on the fly for other grids (e.g. 32×32 at 512² in stage 2).
+        self.image_grid = 64
+        self.image_pos = nn.Parameter(torch.zeros(1, self.image_grid * self.image_grid, hidden_dim))
         nn.init.trunc_normal_(self.image_pos, std=0.02)
 
         self.blocks = nn.ModuleList(
@@ -97,6 +100,15 @@ class CrossModalAdapter(nn.Module):
             nn.Linear(hidden_dim * 2, hidden_dim),
         )
 
+    def _image_pos(self, H: int, W: int) -> Tensor:
+        """Learned (64×64) image pos-embed, bicubically resized to the (H,W) grid."""
+        g = self.image_grid
+        if H == g and W == g:
+            return self.image_pos
+        pos = self.image_pos.reshape(1, g, g, self.hidden_dim).permute(0, 3, 1, 2)  # (1,D,g,g)
+        pos = F.interpolate(pos, size=(H, W), mode="bicubic", align_corners=False)
+        return pos.permute(0, 2, 3, 1).reshape(1, H * W, self.hidden_dim)
+
     def forward(self, image_feat: Tensor, text_tokens: Tensor, text_mask: Tensor) -> Tensor:
         """
         Args:
@@ -107,11 +119,11 @@ class CrossModalAdapter(nn.Module):
         Returns:
             sparse_prompts: (B, K, 256) — SAM-compatible sparse prompt embeddings.
         """
-        B = image_feat.shape[0]
+        B, _, H, W = image_feat.shape
 
         img = self.image_proj(image_feat)                  # (B, D, H, W)
         img = img.flatten(2).transpose(1, 2)               # (B, HW, D)
-        img = img + self.image_pos[:, : img.shape[1]]
+        img = img + self._image_pos(H, W)
 
         txt = self.text_proj(text_tokens)                  # (B, L, D)
 

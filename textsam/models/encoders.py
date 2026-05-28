@@ -69,6 +69,42 @@ def _patch_sam_attention_with_sdpa() -> bool:
     return True
 
 
+def _resize_sam_for_input(encoder, prompt_encoder, new_img_size: int, patch: int = 16):
+    """Adapt a 1024²-pretrained SAM ViT to a different square input size.
+
+    SAM ViT-B's absolute pos_embed is a fixed 64×64 grid and its global-attention
+    blocks carry rel_pos tables sized to that grid. For a smaller input we
+    interpolate both, plus the prompt encoder's dense-PE grid, so the whole stack
+    is internally consistent at the new resolution. Window-attention blocks use a
+    fixed 14×14 window and need no change.
+    """
+    old_img_size = encoder.img_size
+    if new_img_size == old_img_size:
+        return
+    new_grid = new_img_size // patch
+
+    # 1) absolute pos_embed: (1, gh, gw, C) -> (1, new_grid, new_grid, C)
+    pe = encoder.pos_embed.data.permute(0, 3, 1, 2)          # (1, C, gh, gw)
+    pe = F.interpolate(pe, size=(new_grid, new_grid), mode="bicubic", align_corners=False)
+    encoder.pos_embed = nn.Parameter(pe.permute(0, 2, 3, 1).contiguous())
+
+    # 2) global-attention rel_pos tables (window_size == 0 blocks), length 2*grid-1
+    new_len = 2 * new_grid - 1
+    for blk in encoder.blocks:
+        if getattr(blk, "window_size", 0) == 0 and getattr(blk.attn, "use_rel_pos", False):
+            for name in ("rel_pos_h", "rel_pos_w"):
+                rp = getattr(blk.attn, name).data                # (2*old_grid-1, head_dim)
+                rp = rp.permute(1, 0).unsqueeze(0)               # (1, head_dim, L_old)
+                rp = F.interpolate(rp, size=new_len, mode="linear", align_corners=False)
+                rp = rp.squeeze(0).permute(1, 0).contiguous()    # (L_new, head_dim)
+                setattr(blk.attn, name, nn.Parameter(rp))
+
+    encoder.img_size = new_img_size
+    # 3) prompt encoder dense-PE grid + nominal input size
+    prompt_encoder.image_embedding_size = (new_grid, new_grid)
+    prompt_encoder.input_image_size = (new_img_size, new_img_size)
+
+
 def _build_sam(model_type: str, checkpoint: str | None):
     """Build a SAM model via the official `segment_anything` package."""
     try:
@@ -92,17 +128,19 @@ class SAMImageEncoder(nn.Module):
     the pretrained MaskDecoder weights.
     """
 
-    def __init__(self, model_type: str = "sam_vit_b", checkpoint: str | None = None):
+    def __init__(self, model_type: str = "sam_vit_b", checkpoint: str | None = None, image_size: int = 1024):
         super().__init__()
         _patch_sam_attention_with_sdpa()
         sam = _build_sam(model_type, checkpoint)
         self.encoder = sam.image_encoder
-        # Held so callers can fetch the dense positional encoding (1,256,64,64)
-        # and re-init the mask decoder. We do NOT freeze these — the caller
-        # decides what to freeze and what to train.
+        # Held so callers can fetch the dense positional encoding and re-init the
+        # mask decoder. We do NOT freeze these — the caller decides what to freeze.
         self._sam_prompt_encoder = sam.prompt_encoder
         self._sam_mask_decoder = sam.mask_decoder
-        self.image_size = sam.image_encoder.img_size  # 1024
+        # Stage 2 runs at 512²; interpolate SAM's 1024²-pretrained pos embeddings.
+        if image_size != self.encoder.img_size:
+            _resize_sam_for_input(self.encoder, self._sam_prompt_encoder, image_size)
+        self.image_size = self.encoder.img_size
 
     def forward(self, images: Tensor) -> Tensor:
         return self.encoder(images)

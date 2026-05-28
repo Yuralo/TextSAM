@@ -50,7 +50,11 @@ class TextSAM(nn.Module):
         ad_cfg = cfg["adapter"]
         dc_cfg = cfg.get("decoder", {})
 
-        image_enc = SAMImageEncoder(model_type=ie_cfg["name"], checkpoint=ie_cfg.get("checkpoint"))
+        image_enc = SAMImageEncoder(
+            model_type=ie_cfg["name"],
+            checkpoint=ie_cfg.get("checkpoint"),
+            image_size=ie_cfg.get("image_size", 1024),
+        )
         if ie_cfg.get("freeze", True):
             image_enc.freeze()
 
