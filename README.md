@@ -52,6 +52,69 @@ the user's spec. PhraseCut keeps stage 1 strictly off the COCO image set; LVIS
 in stage 2 reuses the COCO images you already have on disk for a 1 200-class
 vocabulary at near-zero extra disk cost.
 
+## Results
+
+Validation metrics on held-out splits after each training stage (see
+`eval/stage1/metrics.json` and `eval/stage2/metrics.json` for full detail).
+
+### Stage 1 — PhraseCut
+
+Evaluated on **33 553** phrase–image pairs.
+
+| Metric | Value |
+|---|---|
+| mIoU | 0.403 |
+| Median IoU | 0.376 |
+| IoU @ 0.5 | 40.1% |
+| IoU @ 0.7 | 24.0% |
+| IoU @ 0.9 | 5.4% |
+
+mIoU by phrase length (words): 1 → 0.438, 2 → 0.405, 3 → 0.348, 4 → 0.345,
+5 → 0.320, 6 → 0.332.
+
+<p align="center">
+  <img src="eval/stage1/qualitative.png" alt="Stage 1 qualitative predictions" width="90%">
+</p>
+
+<p align="center">
+  <img src="eval/stage1/iou_hist.png" alt="Stage 1 IoU histogram" width="70%">
+</p>
+
+### Stage 2 — ADE20K + LVIS
+
+Evaluated on **16 000** class queries across **150** seen classes.
+
+| Metric | Value |
+|---|---|
+| mIoU | 0.524 |
+| Median IoU | 0.586 |
+| IoU @ 0.5 | 56.4% |
+| IoU @ 0.7 | 39.3% |
+| IoU @ 0.9 | 15.3% |
+
+Best classes (mIoU): tent 0.934, sky 0.872, swimming pool 0.780, pool table
+0.766, skyscraper 0.745. Hardest: runway 0.074, glass 0.101, traffic light
+0.147, plate 0.153, basket 0.155.
+
+<p align="center">
+  <img src="eval/stage2/qualitative.png" alt="Stage 2 qualitative predictions" width="90%">
+</p>
+
+<p align="center">
+  <img src="eval/stage2/iou_hist.png" alt="Stage 2 IoU histogram" width="70%">
+</p>
+
+### Dataset overview
+
+<p align="center">
+  <img src="viz/stats.png" alt="Dataset statistics" width="80%">
+</p>
+
+<p align="center">
+  <img src="viz/samples_train.png" alt="Training samples" width="45%">
+  <img src="viz/samples_val.png" alt="Validation samples" width="45%">
+</p>
+
 ## Architecture (one paragraph)
 
 Two backbones are **frozen** — SAM's ViT-B image encoder and CLIP's
